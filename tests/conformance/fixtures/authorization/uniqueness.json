@@ -1,0 +1,57 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.1.0",
+  "capability": "authorization",
+  "operation": "create_tuple",
+  "conformance_level": "MUST",
+  "spec_section": "docs/authorization.md#the-tuple-primitive",
+  "description": "Tuple natural-key uniqueness: two tuples with identical (subject_type, subject_id, relation, object_type, object_id) cannot coexist.",
+  "tests": [
+    {
+      "id": "uniqueness.duplicate-natural-key.rejected",
+      "description": "Creating a tuple with a natural key already in use MUST raise DuplicateTupleError.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "owner",
+            "object_type": "org",
+            "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+          }
+        ],
+        "create": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "owner",
+          "object_type": "org",
+          "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+        }
+      },
+      "expected": { "error": "DuplicateTupleError" }
+    },
+    {
+      "id": "uniqueness.different-relation.allowed",
+      "description": "Two tuples sharing subject and object but differing in relation are independent and may coexist.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "viewer",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "create": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "editor",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": "ok" }
+    }
+  ]
+}

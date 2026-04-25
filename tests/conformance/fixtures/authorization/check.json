@@ -1,0 +1,187 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.1.0",
+  "capability": "authorization",
+  "operation": "check",
+  "conformance_level": "MUST",
+  "spec_section": "docs/authorization.md#exact-match-semantics",
+  "description": "check() exact-match semantics: a check returns true iff a tuple with the exact 5-key matches. No derivation, no inheritance, no group expansion.",
+  "tests": [
+    {
+      "id": "check.exact-match.editor.allowed",
+      "description": "Given (alice, editor, project_42), check(alice, editor, project_42) returns true.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "editor",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": true } }
+    },
+    {
+      "id": "check.miss.different-relation",
+      "description": "Given (alice, editor, project_42), check(alice, viewer, project_42) returns false.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "viewer",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    },
+    {
+      "id": "check.miss.different-subject",
+      "description": "Given (alice, editor, project_42), check(bob, editor, project_42) returns false.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000002",
+          "relation": "editor",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    },
+    {
+      "id": "check.miss.different-object",
+      "description": "Given (alice, editor, project_42), check(alice, editor, project_99) returns false.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "editor",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-000000000099"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    },
+    {
+      "id": "check.no-derivation.admin-not-editor",
+      "description": "Given ONLY (alice, admin, org_acme), check(alice, editor, org_acme) MUST return false. v0.1 has no role implication; admin does not imply editor.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "admin",
+            "object_type": "org",
+            "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "editor",
+          "object_type": "org",
+          "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    },
+    {
+      "id": "check.no-derivation.editor-not-viewer",
+      "description": "Given ONLY (alice, editor, project_42), check(alice, viewer, project_42) MUST return false. v0.1 has no implication; editor does not imply viewer.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "viewer",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    },
+    {
+      "id": "check.no-derivation.org-membership-not-project-access",
+      "description": "Given (alice, member, org_acme) only, check(alice, viewer, project_42) MUST return false. v0.1 has no parent-child inheritance from org membership to org-owned objects.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "member",
+            "object_type": "org",
+            "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "viewer",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    },
+    {
+      "id": "check.empty-store.always-false",
+      "description": "With no tuples, every check returns false.",
+      "input": {
+        "given_tuples": [],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "owner",
+          "object_type": "org",
+          "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    }
+  ]
+}

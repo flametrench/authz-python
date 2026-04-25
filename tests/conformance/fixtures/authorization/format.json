@@ -1,0 +1,86 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.1.0",
+  "capability": "authorization",
+  "operation": "create_tuple",
+  "conformance_level": "MUST",
+  "spec_section": "docs/authorization.md#the-tuple-primitive",
+  "description": "Format-rule enforcement at tuple creation: relation names match /^[a-z_]{2,32}$/ and object types match /^[a-z]{2,6}$/. Inputs that violate either pattern MUST be rejected with InvalidFormatError.",
+  "tests": [
+    {
+      "id": "format.reject.relation-uppercase",
+      "description": "Relation names with uppercase letters are rejected.",
+      "input": {
+        "given_tuples": [],
+        "create": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "Owner",
+          "object_type": "org",
+          "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+        }
+      },
+      "expected": { "error": "InvalidFormatError" }
+    },
+    {
+      "id": "format.reject.relation-too-short",
+      "description": "Relation names of length 1 are rejected (minimum 2).",
+      "input": {
+        "given_tuples": [],
+        "create": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "x",
+          "object_type": "org",
+          "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+        }
+      },
+      "expected": { "error": "InvalidFormatError" }
+    },
+    {
+      "id": "format.reject.relation-too-long",
+      "description": "Relation names longer than 32 characters are rejected.",
+      "input": {
+        "given_tuples": [],
+        "create": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "this_relation_name_is_definitely_more_than_thirty_two_characters",
+          "object_type": "org",
+          "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+        }
+      },
+      "expected": { "error": "InvalidFormatError" }
+    },
+    {
+      "id": "format.reject.object-type-too-long",
+      "description": "Object-type prefixes longer than 6 characters are rejected (per docs/ids.md type-prefix rule).",
+      "input": {
+        "given_tuples": [],
+        "create": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "viewer",
+          "object_type": "project",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "error": "InvalidFormatError" }
+    },
+    {
+      "id": "format.accept.custom-relation-with-underscore",
+      "description": "Custom relations matching the regex (including underscores) are accepted.",
+      "input": {
+        "given_tuples": [],
+        "create": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "report_publisher",
+          "object_type": "org",
+          "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+        }
+      },
+      "expected": { "result": "ok" }
+    }
+  ]
+}

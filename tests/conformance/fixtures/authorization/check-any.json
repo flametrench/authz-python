@@ -1,0 +1,95 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.1.0",
+  "capability": "authorization",
+  "operation": "check_any",
+  "conformance_level": "MUST",
+  "spec_section": "docs/authorization.md#the-check-primitive",
+  "description": "checkAny() set-form semantics: returns true if a tuple exists for any of the supplied relations. The relations array MUST NOT be empty.",
+  "tests": [
+    {
+      "id": "check_any.set.matches-one",
+      "description": "Given (alice, editor, project_42), checkAny(alice, [viewer, editor, owner], project_42) returns true (editor matches).",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relations": ["viewer", "editor", "owner"],
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": true } }
+    },
+    {
+      "id": "check_any.set.matches-none",
+      "description": "Given (alice, editor, project_42), checkAny(alice, [viewer, admin], project_42) returns false (neither matches).",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relations": ["viewer", "admin"],
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    },
+    {
+      "id": "check_any.set.equivalent-to-single",
+      "description": "Given (alice, editor, project_42), checkAny with a single-element [editor] is equivalent to check(editor).",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relations": ["editor"],
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": true } }
+    },
+    {
+      "id": "check_any.reject.empty-relations",
+      "description": "An empty relations array MUST be rejected as invalid input. Implementations raise the spec's empty-set error rather than silently returning false.",
+      "input": {
+        "given_tuples": [],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relations": [],
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "error": "EmptyRelationSetError" }
+    }
+  ]
+}
