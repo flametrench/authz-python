@@ -21,6 +21,12 @@ from .errors import (
     TupleNotFoundError,
 )
 from .patterns import RELATION_NAME_PATTERN, TYPE_PREFIX_PATTERN
+from .rewrite_rules import (
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_FAN_OUT,
+    Rules,
+    evaluate,
+)
 from .types import CheckResult, Page, Tuple
 
 
@@ -29,12 +35,29 @@ def _default_clock() -> datetime:
 
 
 class InMemoryTupleStore:
-    """O(1) check() via secondary natural-key index; deterministic for tests."""
+    """O(1) check() via secondary natural-key index; deterministic for tests.
 
-    def __init__(self, *, clock: Callable[[], datetime] | None = None) -> None:
+    v0.2 adds optional rewrite-rule support. When ``rules`` is None
+    (the default), behavior is byte-identical to v0.1 — a direct
+    natural-key lookup is the only check path. When ``rules`` is
+    provided, ``check()`` evaluates rules on direct-lookup miss per
+    ADR 0007.
+    """
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        rules: Rules | None = None,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+        max_fan_out: int = DEFAULT_MAX_FAN_OUT,
+    ) -> None:
         self._tuples: dict[str, Tuple] = {}
         self._key_index: dict[str, str] = {}  # natural-key → tup id
         self._clock = clock or _default_clock
+        self._rules = rules
+        self._max_depth = max_depth
+        self._max_fan_out = max_fan_out
 
     @staticmethod
     def _natural_key(
@@ -139,9 +162,63 @@ class InMemoryTupleStore:
         object_type: str,
         object_id: str,
     ) -> CheckResult:
+        # v0.1 fast path: direct natural-key lookup. Returns immediately
+        # on a direct hit regardless of whether rules are registered.
         key = self._natural_key(subject_type, subject_id, relation, object_type, object_id)
         tup_id = self._key_index.get(key)
-        return CheckResult(allowed=tup_id is not None, matched_tuple_id=tup_id)
+        if tup_id is not None:
+            return CheckResult(allowed=True, matched_tuple_id=tup_id)
+
+        # v0.2 path: rule expansion only when a direct lookup misses
+        # AND rules are registered. With rules=None, this branch is
+        # skipped and behavior is byte-identical to v0.1.
+        if self._rules is None:
+            return CheckResult(allowed=False, matched_tuple_id=None)
+
+        result = evaluate(
+            rules=self._rules,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            relation=relation,
+            object_type=object_type,
+            object_id=object_id,
+            direct_lookup=self._direct_lookup,
+            list_by_object=self._list_subjects_by_object,
+            max_depth=self._max_depth,
+            max_fan_out=self._max_fan_out,
+        )
+        return CheckResult(
+            allowed=result.allowed, matched_tuple_id=result.matched_tuple_id
+        )
+
+    def _direct_lookup(
+        self,
+        subject_type: str,
+        subject_id: str,
+        relation: str,
+        object_type: str,
+        object_id: str,
+    ) -> str | None:
+        """Direct natural-key lookup callback for the rule evaluator."""
+        return self._key_index.get(
+            self._natural_key(
+                subject_type, subject_id, relation, object_type, object_id
+            )
+        )
+
+    def _list_subjects_by_object(
+        self, object_type: str, object_id: str, relation: str | None
+    ):
+        """Enumerate (subject_type, subject_id, tup_id) tuples on an object.
+
+        Used by ``TupleToUserset`` evaluation to follow a relation hop.
+        """
+        for t in self._tuples.values():
+            if t.object_type != object_type or t.object_id != object_id:
+                continue
+            if relation is not None and t.relation != relation:
+                continue
+            yield (t.subject_type, t.subject_id, t.id)
 
     def check_any(
         self,
@@ -154,12 +231,13 @@ class InMemoryTupleStore:
         if len(relations) == 0:
             raise EmptyRelationSetError()
         for relation in relations:
-            key = self._natural_key(
+            # Reuse rule-aware check() so check_any benefits from
+            # rewrite rules when they're registered.
+            result = self.check(
                 subject_type, subject_id, relation, object_type, object_id
             )
-            tup_id = self._key_index.get(key)
-            if tup_id is not None:
-                return CheckResult(allowed=True, matched_tuple_id=tup_id)
+            if result.allowed:
+                return result
         return CheckResult(allowed=False, matched_tuple_id=None)
 
     # ─── Read accessors ───

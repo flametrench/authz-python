@@ -53,3 +53,20 @@ class EmptyRelationSetError(AuthzError):
             "check_any() relations array must be non-empty",
             code="invalid_format.relations",
         )
+
+
+class EvaluationLimitExceededError(AuthzError):
+    """Rewrite-rule evaluation exceeded a bound (depth or fan-out).
+
+    Raised by :func:`flametrench_authz.rewrite_rules.evaluate` when a
+    chain of computed_userset / tuple_to_userset hops exceeds the
+    configured ``max_depth`` or when a single ``TupleToUserset`` step
+    enumerates more tuples than ``max_fan_out``.
+
+    Bounds are configurable per-store; the spec floor is depth=8,
+    fan-out=1024. Apps hitting this in practice should restructure
+    their rule set or explicitly raise the limit.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="evaluation_limit_exceeded")

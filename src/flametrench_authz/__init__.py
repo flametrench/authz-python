@@ -16,27 +16,43 @@ from .errors import (
     AuthzError,
     DuplicateTupleError,
     EmptyRelationSetError,
+    EvaluationLimitExceededError,
     InvalidFormatError,
     TupleNotFoundError,
 )
 from .in_memory import InMemoryTupleStore
 from .patterns import RELATION_NAME_PATTERN, TYPE_PREFIX_PATTERN
+from .rewrite_rules import (
+    ComputedUserset,
+    Rule,
+    RuleNode,
+    Rules,
+    This,
+    TupleToUserset,
+)
 from .store import TupleStore
 from .types import CheckResult, Page, Tuple
 
 __all__ = [
     "AuthzError",
     "CheckResult",
+    "ComputedUserset",
     "DuplicateTupleError",
     "EmptyRelationSetError",
+    "EvaluationLimitExceededError",
     "InMemoryTupleStore",
     "InvalidFormatError",
     "Page",
     "RELATION_NAME_PATTERN",
+    "Rule",
+    "RuleNode",
+    "Rules",
     "TYPE_PREFIX_PATTERN",
+    "This",
     "Tuple",
     "TupleNotFoundError",
     "TupleStore",
+    "TupleToUserset",
 ]
 
 __version__ = "0.1.0"
