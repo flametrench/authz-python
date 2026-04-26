@@ -1,0 +1,72 @@
+{
+  "$schema": "../../../fixture.schema.json",
+  "spec_version": "0.2.0",
+  "capability": "authorization",
+  "operation": "check",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0007-authorization-rewrite-rules.md",
+  "description": "Compatibility bridge: with rules omitted (or empty), a v0.2 SDK MUST return the same answers as a v0.1 SDK. This fixture makes the v0.1-equivalence guarantee mechanical.",
+  "tests": [
+    {
+      "id": "rewrite.empty_rules.no_derivation_admin_to_editor",
+      "description": "With no rules registered, holding (alice, admin, org_acme) MUST NOT allow check(alice, editor, org_acme). Identical to v0.1 fixtures/authorization/check.json#check.no-derivation.admin-not-editor.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "admin",
+            "object_type": "org",
+            "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "editor",
+          "object_type": "org",
+          "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    },
+    {
+      "id": "rewrite.empty_rules.direct_match_still_works",
+      "description": "With no rules registered, an exact-match tuple MUST still allow check(). The v0.1 fast path is unchanged in v0.2.",
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "editor",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": true } }
+    },
+    {
+      "id": "rewrite.empty_rules.empty_store_always_denies",
+      "description": "With no rules registered AND no tuples, every check MUST return false. Identical to v0.1 fixtures/authorization/check.json#check.empty-store.always-false.",
+      "input": {
+        "given_tuples": [],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "owner",
+          "object_type": "org",
+          "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    }
+  ]
+}

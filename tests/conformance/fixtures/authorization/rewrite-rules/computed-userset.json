@@ -1,0 +1,108 @@
+{
+  "$schema": "../../../fixture.schema.json",
+  "spec_version": "0.2.0",
+  "capability": "authorization",
+  "operation": "check",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0007-authorization-rewrite-rules.md",
+  "description": "computed_userset rewrite — role implication on the same object. v0.2 ADR 0007.",
+  "tests": [
+    {
+      "id": "rewrite.computed_userset.editor_implies_viewer",
+      "description": "With proj.viewer ← editor, holding (alice, editor, proj_42) MUST allow check(alice, viewer, proj_42).",
+      "rules": {
+        "proj": {
+          "viewer": [
+            { "type": "this" },
+            { "type": "computed_userset", "relation": "editor" }
+          ]
+        }
+      },
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "editor",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "viewer",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": true } }
+    },
+    {
+      "id": "rewrite.computed_userset.admin_chain_to_viewer",
+      "description": "With proj.viewer ← editor and proj.editor ← admin, holding (alice, admin, proj_42) MUST allow check(alice, viewer, proj_42) via the admin → editor → viewer chain.",
+      "rules": {
+        "proj": {
+          "viewer": [
+            { "type": "this" },
+            { "type": "computed_userset", "relation": "editor" }
+          ],
+          "editor": [
+            { "type": "this" },
+            { "type": "computed_userset", "relation": "admin" }
+          ]
+        }
+      },
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "admin",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "viewer",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": true } }
+    },
+    {
+      "id": "rewrite.computed_userset.no_chain_no_implication",
+      "description": "With ONLY proj.viewer ← editor (no editor ← admin rule), holding (alice, admin, proj_42) MUST NOT allow check(alice, viewer, proj_42). The chain admin → editor → viewer requires both rules; the absence of any link breaks the chain.",
+      "rules": {
+        "proj": {
+          "viewer": [
+            { "type": "this" },
+            { "type": "computed_userset", "relation": "editor" }
+          ]
+        }
+      },
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "admin",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "viewer",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    }
+  ]
+}

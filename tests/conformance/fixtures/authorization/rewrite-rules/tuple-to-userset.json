@@ -1,0 +1,130 @@
+{
+  "$schema": "../../../fixture.schema.json",
+  "spec_version": "0.2.0",
+  "capability": "authorization",
+  "operation": "check",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0007-authorization-rewrite-rules.md",
+  "description": "tuple_to_userset rewrite — parent-child inheritance via a relation hop. v0.2 ADR 0007.",
+  "tests": [
+    {
+      "id": "rewrite.tuple_to_userset.org_admin_implies_proj_admin",
+      "description": "With proj.admin ← (proj#parent_org).admin, an org admin MUST be admin on every project whose parent_org points at that org.",
+      "rules": {
+        "proj": {
+          "admin": [
+            { "type": "this" },
+            {
+              "type": "tuple_to_userset",
+              "tupleset_relation": "parent_org",
+              "computed_userset_relation": "admin"
+            }
+          ]
+        }
+      },
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "admin",
+            "object_type": "org",
+            "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+          },
+          {
+            "subject_type": "org",
+            "subject_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa",
+            "relation": "parent_org",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "admin",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": true } }
+    },
+    {
+      "id": "rewrite.tuple_to_userset.org_member_does_not_imply_proj_admin",
+      "description": "With proj.admin ← (proj#parent_org).admin, an org MEMBER (not admin) MUST NOT be admin on the project. The hop checks the destination relation literally; only org admins satisfy.",
+      "rules": {
+        "proj": {
+          "admin": [
+            { "type": "this" },
+            {
+              "type": "tuple_to_userset",
+              "tupleset_relation": "parent_org",
+              "computed_userset_relation": "admin"
+            }
+          ]
+        }
+      },
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "member",
+            "object_type": "org",
+            "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+          },
+          {
+            "subject_type": "org",
+            "subject_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa",
+            "relation": "parent_org",
+            "object_type": "proj",
+            "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "admin",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    },
+    {
+      "id": "rewrite.tuple_to_userset.no_parent_no_inheritance",
+      "description": "With proj.admin ← (proj#parent_org).admin, an org admin MUST NOT be admin on a project that has no parent_org tuple. Inheritance requires the hop to land on something.",
+      "rules": {
+        "proj": {
+          "admin": [
+            { "type": "this" },
+            {
+              "type": "tuple_to_userset",
+              "tupleset_relation": "parent_org",
+              "computed_userset_relation": "admin"
+            }
+          ]
+        }
+      },
+      "input": {
+        "given_tuples": [
+          {
+            "subject_type": "usr",
+            "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+            "relation": "admin",
+            "object_type": "org",
+            "object_id": "0190f2a8-1b3c-7abc-8123-aaaaaaaaaaaa"
+          }
+        ],
+        "check": {
+          "subject_type": "usr",
+          "subject_id": "usr_0190f2a81b3c7abc8123000000000001",
+          "relation": "admin",
+          "object_type": "proj",
+          "object_id": "0190f2a8-1b3c-7abc-8123-456789abcdef"
+        }
+      },
+      "expected": { "result": { "allowed": false } }
+    }
+  ]
+}
