@@ -213,3 +213,20 @@ def test_list_tuples_by_subject_paginates(store, alice):
     page2 = store.list_tuples_by_subject("usr", alice, cursor=page1.next_cursor, limit=10)
     all_ids = {t.id for t in page1.data} | {t.id for t in page2.data}
     assert len(all_ids) == 5
+
+
+def test_wire_format_object_id_with_app_defined_prefix(store, alice):
+    """spec#8 regression: object_type is application-defined per ADR 0001,
+    so adopters legitimately pass wire-format prefixed IDs (e.g.
+    ``proj_<32hex>``, ``file_<32hex>``) at this boundary. Previously this
+    raised a Postgres UUID parse error.
+    """
+    wire_proj = "proj_" + _new_object_id().replace("-", "")
+    t = store.create_tuple("usr", alice, "owner", "proj", wire_proj)
+    assert t.id.startswith("tup_")
+    # check() and list_tuples_by_object() must accept the same wire-format
+    # value back through the read paths.
+    result = store.check("usr", alice, "owner", "proj", wire_proj)
+    assert result.allowed is True
+    listed = store.list_tuples_by_object("proj", wire_proj)
+    assert len(listed.data) == 1

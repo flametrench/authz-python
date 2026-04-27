@@ -3,6 +3,11 @@
 All notable changes to `flametrench-authz` are recorded here.
 Spec-level changes live in [`spec/CHANGELOG.md`](https://github.com/flametrench/spec/blob/main/CHANGELOG.md).
 
+## [v0.2.0rc4] — 2026-04-27
+
+### Fixed
+- `PostgresTupleStore` (`create_tuple`, `check_any`, `list_tuples_by_object`) and `PostgresShareStore` (`create_share`, `list_shares_for_object`) now accept wire-format `object_id` values with app-defined prefixes (e.g. `proj_<32hex>`, `file_<32hex>`) in addition to bare 32-hex and canonical hyphenated UUIDs. Previously, binding a wire-format `object_id` directly to the UUID column raised a Postgres parse error. `object_type` is application-defined per ADR 0001, so adopters legitimately pass wire-format prefixed IDs at this boundary. Closes [`spec#8`](https://github.com/flametrench/spec/issues/8).
+
 ## [v0.2.0rc3] — 2026-04-27
 
 ### Added

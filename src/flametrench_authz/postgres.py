@@ -33,7 +33,13 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterator, Sequence
 
-from flametrench_ids import decode as _decode, encode as _encode, generate as _generate
+from flametrench_ids import (
+    decode as _decode,
+    decode_any as _decode_any,
+    encode as _encode,
+    generate as _generate,
+)
+import re as _re
 
 from .errors import (
     DuplicateTupleError,
@@ -66,6 +72,29 @@ def _default_clock() -> datetime:
 
 def _wire_to_uuid(wire_id: str) -> str:
     return _decode(wire_id).uuid
+
+
+_OBJECT_ID_WIRE_RE = _re.compile(r"^[a-z]{2,6}_[0-9a-f]{32}$")
+
+
+def _object_id_to_uuid(object_id: str) -> str:
+    """Decode an ``object_id`` to a Postgres-bindable UUID string.
+
+    ``object_type`` is application-defined (per spec/docs/authorization.md
+    and ADR 0001), so ``object_id`` may legitimately arrive as:
+
+    1. A wire-format ID with a non-registered prefix (e.g. ``proj_<hex>``,
+       ``file_<hex>``) — extract the UUID via ``decode_any`` so app-defined
+       prefixes are accepted in addition to registered types.
+    2. A raw 32-character hex UUID — accept as-is; Postgres UUID parsing
+       handles both 32-hex and hyphenated forms.
+    3. A canonical hyphenated UUID — also accepted as-is.
+
+    Closes spec#8.
+    """
+    if _OBJECT_ID_WIRE_RE.match(object_id):
+        return _decode_any(object_id).uuid
+    return object_id
 
 
 def _row_to_tuple(row: Sequence[Any]) -> Tuple:
@@ -146,6 +175,7 @@ class PostgresTupleStore:
         self._validate(relation, object_type)
         tup_uuid = _decode(_generate("tup")).uuid
         subject_uuid = _wire_to_uuid(subject_id)
+        object_uuid = _object_id_to_uuid(object_id)
         created_by_uuid = _wire_to_uuid(created_by) if created_by is not None else None
         now = self._now()
         try:
@@ -156,7 +186,7 @@ class PostgresTupleStore:
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING {_TUP_COLS}
                     """,
-                    (tup_uuid, subject_type, subject_uuid, relation, object_type, object_id, now, created_by_uuid),
+                    (tup_uuid, subject_type, subject_uuid, relation, object_type, object_uuid, now, created_by_uuid),
                 )
                 row = cur.fetchone()
                 self._conn.commit()
@@ -172,7 +202,7 @@ class PostgresTupleStore:
                         WHERE subject_type = %s AND subject_id = %s AND relation = %s
                           AND object_type = %s AND object_id = %s
                         """,
-                        (subject_type, subject_uuid, relation, object_type, object_id),
+                        (subject_type, subject_uuid, relation, object_type, object_uuid),
                     )
                     existing = cur.fetchone()
                 if existing is not None:
@@ -240,7 +270,7 @@ class PostgresTupleStore:
                     _wire_to_uuid(subject_id),
                     list(relations),
                     object_type,
-                    object_id,
+                    _object_id_to_uuid(object_id),
                 ),
             )
             row = cur.fetchone()
@@ -298,7 +328,7 @@ class PostgresTupleStore:
         limit: int = 50,
     ) -> Page[Tuple]:
         limit = min(limit, 200)
-        params: list[Any] = [object_type, object_id]
+        params: list[Any] = [object_type, _object_id_to_uuid(object_id)]
         sql = (
             f"SELECT {_TUP_COLS} FROM tup "
             "WHERE object_type = %s AND object_id = %s"
@@ -478,7 +508,8 @@ class PostgresShareStore:
                 RETURNING {_SHR_COLS}
                 """,
                 (
-                    share_uuid, token_hash, object_type, object_id, relation,
+                    share_uuid, token_hash, object_type,
+                    _object_id_to_uuid(object_id), relation,
                     created_by_uuid, expires_at, single_use, now,
                 ),
             )
@@ -578,7 +609,7 @@ class PostgresShareStore:
         limit: int = 50,
     ) -> Page[Share]:
         limit = min(limit, 200)
-        params: list[Any] = [object_type, object_id]
+        params: list[Any] = [object_type, _object_id_to_uuid(object_id)]
         sql = f"SELECT {_SHR_COLS} FROM shr WHERE object_type = %s AND object_id = %s"
         if cursor is not None:
             sql += " AND id > %s"
