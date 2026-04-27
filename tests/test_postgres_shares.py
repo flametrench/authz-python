@@ -20,6 +20,7 @@ from flametrench_ids import decode, generate
 from flametrench_authz import (
     InvalidFormatError,
     InvalidShareTokenError,
+    PreconditionError,
     SHARE_MAX_TTL_SECONDS,
     ShareConsumedError,
     ShareExpiredError,
@@ -178,6 +179,37 @@ def test_list_shares_for_object_paginates(store, alice, project42):
     )
     ids = {s.id for s in page1.data} | {s.id for s in page2.data}
     assert len(ids) == 3
+
+
+# ─── ADR 0012: created_by must be an active user ───
+
+
+def test_create_rejects_suspended_user(store, conn, alice, project42):
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE usr SET status = 'suspended' WHERE id = %s",
+            (decode(alice).uuid,),
+        )
+    conn.commit()
+    with pytest.raises(PreconditionError):
+        store.create_share("proj", project42, "viewer", alice, 600)
+
+
+def test_create_rejects_revoked_user(store, conn, alice, project42):
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE usr SET status = 'revoked' WHERE id = %s",
+            (decode(alice).uuid,),
+        )
+    conn.commit()
+    with pytest.raises(PreconditionError):
+        store.create_share("proj", project42, "viewer", alice, 600)
+
+
+def test_create_rejects_unknown_user(store, project42):
+    ghost = generate("usr")
+    with pytest.raises(PreconditionError):
+        store.create_share("proj", project42, "viewer", ghost, 600)
 
 
 # ─── Spec error precedence: consumed > expired ───

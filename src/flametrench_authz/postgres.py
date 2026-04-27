@@ -40,6 +40,7 @@ from .errors import (
     EmptyRelationSetError,
     InvalidFormatError,
     InvalidShareTokenError,
+    PreconditionError,
     ShareConsumedError,
     ShareExpiredError,
     ShareNotFoundError,
@@ -441,6 +442,28 @@ class PostgresShareStore:
                 f"{SHARE_MAX_TTL_SECONDS} (365 days)",
                 field="expires_in_seconds",
             )
+        created_by_uuid = _wire_to_uuid(created_by)
+        # ADR 0012: created_by MUST resolve to an active user. The DDL
+        # FK enforces existence; status is checked here at the SDK
+        # layer. Suspended/revoked users with leaked credentials cannot
+        # mint shares.
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM usr WHERE id = %s",
+                (created_by_uuid,),
+            )
+            user_row = cur.fetchone()
+        if user_row is None:
+            raise PreconditionError(
+                f"created_by {created_by} does not exist",
+                reason="creator_not_found",
+            )
+        if user_row[0] != "active":
+            raise PreconditionError(
+                f"created_by {created_by} is {user_row[0]}; "
+                "only active users can mint shares",
+                reason="creator_not_active",
+            )
         share_uuid = _decode(_generate("shr")).uuid
         token = _generate_share_token()
         token_hash = _hash_token_bytes(token)
@@ -456,7 +479,7 @@ class PostgresShareStore:
                 """,
                 (
                     share_uuid, token_hash, object_type, object_id, relation,
-                    _wire_to_uuid(created_by), expires_at, single_use, now,
+                    created_by_uuid, expires_at, single_use, now,
                 ),
             )
             row = cur.fetchone()
