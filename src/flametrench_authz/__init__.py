@@ -18,6 +18,11 @@ from .errors import (
     EmptyRelationSetError,
     EvaluationLimitExceededError,
     InvalidFormatError,
+    InvalidShareTokenError,
+    ShareConsumedError,
+    ShareExpiredError,
+    ShareNotFoundError,
+    ShareRevokedError,
     TupleNotFoundError,
 )
 from .in_memory import InMemoryTupleStore
@@ -30,6 +35,14 @@ from .rewrite_rules import (
     This,
     TupleToUserset,
 )
+from .shares import (
+    SHARE_MAX_TTL_SECONDS,
+    CreateShareResult,
+    InMemoryShareStore,
+    Share,
+    ShareStore,
+    VerifiedShare,
+)
 from .store import TupleStore
 from .types import CheckResult, Page, Tuple
 
@@ -37,22 +50,33 @@ __all__ = [
     "AuthzError",
     "CheckResult",
     "ComputedUserset",
+    "CreateShareResult",
     "DuplicateTupleError",
     "EmptyRelationSetError",
     "EvaluationLimitExceededError",
+    "InMemoryShareStore",
     "InMemoryTupleStore",
     "InvalidFormatError",
+    "InvalidShareTokenError",
     "Page",
     "RELATION_NAME_PATTERN",
     "Rule",
     "RuleNode",
     "Rules",
+    "SHARE_MAX_TTL_SECONDS",
+    "Share",
+    "ShareConsumedError",
+    "ShareExpiredError",
+    "ShareNotFoundError",
+    "ShareRevokedError",
+    "ShareStore",
     "TYPE_PREFIX_PATTERN",
     "This",
     "Tuple",
     "TupleNotFoundError",
     "TupleStore",
     "TupleToUserset",
+    "VerifiedShare",
 ]
 
 __version__ = "0.1.0"

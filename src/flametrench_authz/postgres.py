@@ -25,8 +25,13 @@ psycopg3 connection — i.e. yields a cursor via ``connection()`` /
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Callable, Sequence
+import base64
+import hashlib
+import hmac
+import secrets
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Iterator, Sequence
 
 from flametrench_ids import decode as _decode, encode as _encode, generate as _generate
 
@@ -34,9 +39,20 @@ from .errors import (
     DuplicateTupleError,
     EmptyRelationSetError,
     InvalidFormatError,
+    InvalidShareTokenError,
+    ShareConsumedError,
+    ShareExpiredError,
+    ShareNotFoundError,
+    ShareRevokedError,
     TupleNotFoundError,
 )
 from .patterns import RELATION_NAME_PATTERN, TYPE_PREFIX_PATTERN
+from .shares import (
+    SHARE_MAX_TTL_SECONDS,
+    CreateShareResult,
+    Share,
+    VerifiedShare,
+)
 from .types import CheckResult, Page, Tuple
 
 # Postgres SQLSTATE 23505 = unique_violation.
@@ -305,3 +321,246 @@ def _paginate(rows: list[Sequence[Any]], limit: int) -> Page[Tuple]:
     tuples = [_row_to_tuple(r) for r in page]
     next_cursor = tuples[-1].id if len(rows) > limit and tuples else None
     return Page(data=tuples, next_cursor=next_cursor)
+
+
+# ─── PostgresShareStore (ADR 0012) ───
+
+
+_SHR_COLS = (
+    "id, token_hash, object_type, object_id, relation, created_by, "
+    "expires_at, single_use, consumed_at, revoked_at, created_at"
+)
+
+
+def _hash_token_bytes(token: str) -> bytes:
+    return hashlib.sha256(token.encode("utf-8")).digest()
+
+
+def _generate_share_token() -> str:
+    raw = secrets.token_bytes(32)
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _row_to_share(row: Sequence[Any]) -> Share:
+    """Map a shr row to the public Share dataclass.
+
+    Column order MUST match the SELECT lists used throughout this
+    section: ``id, token_hash, object_type, object_id, relation,
+    created_by, expires_at, single_use, consumed_at, revoked_at,
+    created_at``.
+    """
+    return Share(
+        id=_encode("shr", str(row[0])),
+        # token_hash (row[1]) is internal; never copied to the public record.
+        object_type=str(row[2]),
+        object_id=str(row[3]),
+        relation=str(row[4]),
+        created_by=_encode("usr", str(row[5])),
+        expires_at=row[6] if isinstance(row[6], datetime)
+            else datetime.fromisoformat(str(row[6])),
+        single_use=bool(row[7]),
+        consumed_at=(
+            row[8] if isinstance(row[8], datetime)
+            else (datetime.fromisoformat(str(row[8])) if row[8] is not None else None)
+        ),
+        revoked_at=(
+            row[9] if isinstance(row[9], datetime)
+            else (datetime.fromisoformat(str(row[9])) if row[9] is not None else None)
+        ),
+        created_at=row[10] if isinstance(row[10], datetime)
+            else datetime.fromisoformat(str(row[10])),
+    )
+
+
+class PostgresShareStore:
+    """Postgres-backed ShareStore. See :class:`flametrench_authz.shares.ShareStore`.
+
+    Verification is one round-trip on the lookup index (``shr_token_hash_idx``).
+    Single-use consumption uses ``UPDATE ... WHERE consumed_at IS NULL
+    RETURNING ...`` so concurrent verifies of a single-use token race-
+    correctly to exactly one success.
+    """
+
+    def __init__(
+        self,
+        connection: Any,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._conn = connection
+        self._clock = clock or _default_clock
+
+    def _now(self) -> datetime:
+        return self._clock()
+
+    @contextmanager
+    def _tx(self) -> Iterator[Any]:
+        try:
+            yield self._conn
+            self._conn.commit()
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            raise
+
+    def create_share(
+        self,
+        object_type: str,
+        object_id: str,
+        relation: str,
+        created_by: str,
+        expires_in_seconds: int,
+        *,
+        single_use: bool = False,
+    ) -> CreateShareResult:
+        if not RELATION_NAME_PATTERN.match(relation):
+            raise InvalidFormatError(
+                f"relation '{relation}' must match {RELATION_NAME_PATTERN.pattern}",
+                field="relation",
+            )
+        if not TYPE_PREFIX_PATTERN.match(object_type):
+            raise InvalidFormatError(
+                f"object_type '{object_type}' must match {TYPE_PREFIX_PATTERN.pattern}",
+                field="object_type",
+            )
+        if expires_in_seconds <= 0:
+            raise InvalidFormatError(
+                f"expires_in_seconds must be positive, got {expires_in_seconds}",
+                field="expires_in_seconds",
+            )
+        if expires_in_seconds > SHARE_MAX_TTL_SECONDS:
+            raise InvalidFormatError(
+                f"expires_in_seconds exceeds the spec ceiling of "
+                f"{SHARE_MAX_TTL_SECONDS} (365 days)",
+                field="expires_in_seconds",
+            )
+        share_uuid = _decode(_generate("shr")).uuid
+        token = _generate_share_token()
+        token_hash = _hash_token_bytes(token)
+        now = self._now()
+        expires_at = now + timedelta(seconds=expires_in_seconds)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO shr (id, token_hash, object_type, object_id, relation,
+                                 created_by, expires_at, single_use, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING {_SHR_COLS}
+                """,
+                (
+                    share_uuid, token_hash, object_type, object_id, relation,
+                    _wire_to_uuid(created_by), expires_at, single_use, now,
+                ),
+            )
+            row = cur.fetchone()
+        self._conn.commit()
+        assert row is not None
+        return CreateShareResult(share=_row_to_share(row), token=token)
+
+    def get_share(self, share_id: str) -> Share:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_SHR_COLS} FROM shr WHERE id = %s",
+                (_wire_to_uuid(share_id),),
+            )
+            row = cur.fetchone()
+        if row is None:
+            raise ShareNotFoundError(f"Share {share_id} not found")
+        return _row_to_share(row)
+
+    def verify_share_token(self, token: str) -> VerifiedShare:
+        input_hash = _hash_token_bytes(token)
+        with self._tx() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_SHR_COLS} FROM shr
+                    WHERE token_hash = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (input_hash,),
+                )
+                row = cur.fetchone()
+            if row is None:
+                raise InvalidShareTokenError()
+            stored_hash = bytes(row[1]) if isinstance(row[1], (bytes, memoryview)) else row[1]
+            if not isinstance(stored_hash, bytes):
+                stored_hash = bytes(stored_hash)
+            # Defense-in-depth: constant-time compare on the BYTEA column.
+            if not hmac.compare_digest(input_hash, stored_hash):
+                raise InvalidShareTokenError()
+            # Spec error precedence: revoked > consumed > expired.
+            if row[9] is not None:
+                raise ShareRevokedError()
+            if bool(row[7]) and row[8] is not None:
+                raise ShareConsumedError()
+            now = self._now()
+            expires_at = row[6] if isinstance(row[6], datetime) else datetime.fromisoformat(str(row[6]))
+            if now >= expires_at:
+                raise ShareExpiredError()
+            if bool(row[7]):
+                # Atomic consume — concurrent verifies race here. The
+                # ``WHERE consumed_at IS NULL`` clause is what makes the
+                # second loser.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE shr SET consumed_at = %s
+                        WHERE id = %s AND consumed_at IS NULL
+                        RETURNING id
+                        """,
+                        (now, row[0]),
+                    )
+                    upd = cur.fetchone()
+                if upd is None:
+                    raise ShareConsumedError()
+            return VerifiedShare(
+                share_id=_encode("shr", str(row[0])),
+                object_type=str(row[2]),
+                object_id=str(row[3]),
+                relation=str(row[4]),
+            )
+
+    def revoke_share(self, share_id: str) -> Share:
+        share_uuid = _wire_to_uuid(share_id)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE shr SET revoked_at = COALESCE(revoked_at, %s)
+                WHERE id = %s
+                RETURNING {_SHR_COLS}
+                """,
+                (self._now(), share_uuid),
+            )
+            row = cur.fetchone()
+        self._conn.commit()
+        if row is None:
+            raise ShareNotFoundError(f"Share {share_id} not found")
+        return _row_to_share(row)
+
+    def list_shares_for_object(
+        self,
+        object_type: str,
+        object_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> Page[Share]:
+        limit = min(limit, 200)
+        params: list[Any] = [object_type, object_id]
+        sql = f"SELECT {_SHR_COLS} FROM shr WHERE object_type = %s AND object_id = %s"
+        if cursor is not None:
+            sql += " AND id > %s"
+            params.append(_wire_to_uuid(cursor))
+        sql += " ORDER BY id LIMIT %s"
+        params.append(limit + 1)
+        with self._conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        page = rows[:limit]
+        shares = [_row_to_share(r) for r in page]
+        next_cursor = shares[-1].id if len(rows) > limit and shares else None
+        return Page(data=shares, next_cursor=next_cursor)

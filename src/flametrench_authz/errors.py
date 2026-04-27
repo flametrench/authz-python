@@ -70,3 +70,46 @@ class EvaluationLimitExceededError(AuthzError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, code="evaluation_limit_exceeded")
+
+
+# ─── v0.2 share-token errors (ADR 0012) ───
+
+
+class InvalidShareTokenError(AuthzError):
+    """Generic violation of ``verify_share_token`` precondition.
+
+    Raised when the token doesn't match any row, or when the hash
+    comparison fails. Deliberately conflated to avoid a timing oracle
+    distinguishing "no such hash" from "hash collision but mismatch".
+    """
+
+    def __init__(self, message: str = "Invalid share token") -> None:
+        super().__init__(message, code="invalid_share_token")
+
+
+class ShareExpiredError(AuthzError):
+    """The share's ``expires_at`` has passed."""
+
+    def __init__(self, message: str = "Share has expired") -> None:
+        super().__init__(message, code="share_expired")
+
+
+class ShareRevokedError(AuthzError):
+    """The share has been explicitly revoked."""
+
+    def __init__(self, message: str = "Share has been revoked") -> None:
+        super().__init__(message, code="share_revoked")
+
+
+class ShareConsumedError(AuthzError):
+    """A single-use share has already been consumed."""
+
+    def __init__(self, message: str = "Share has already been consumed") -> None:
+        super().__init__(message, code="share_consumed")
+
+
+class ShareNotFoundError(AuthzError):
+    """A share with the requested id does not exist."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="not_found")

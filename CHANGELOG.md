@@ -3,6 +3,20 @@
 All notable changes to `flametrench-authz` are recorded here.
 Spec-level changes live in [`spec/CHANGELOG.md`](https://github.com/flametrench/spec/blob/main/CHANGELOG.md).
 
+## [v0.2.0rc3] — 2026-04-27
+
+### Added
+- `ShareStore` Protocol and two implementations — `InMemoryShareStore` (in `flametrench_authz.shares`) and `PostgresShareStore` (in `flametrench_authz.postgres`). Implements [ADR 0012](https://github.com/flametrench/spec/blob/main/decisions/0012-share-tokens.md)'s share-token primitive: time-bounded, presentation-bearer access to a single resource without minting an authenticated principal. Closes [`spec#7`](https://github.com/flametrench/spec/issues/7).
+  - Token storage matches `ses`: SHA-256 → 32 bytes `BYTEA`, constant-time compare via `hmac.compare_digest`.
+  - Verification ordering is normative: revoked > consumed > expired > success.
+  - `single_use` shares consume on first verify via `UPDATE … WHERE consumed_at IS NULL RETURNING …`, so concurrent verifies of a single-use token race-correctly to exactly one success and one `ShareConsumedError`.
+  - 365-day spec ceiling on `expires_in_seconds`; `InvalidFormatError` raised for over-long lifetimes.
+  - New error classes: `InvalidShareTokenError`, `ShareExpiredError`, `ShareRevokedError`, `ShareConsumedError`, `ShareNotFoundError`.
+- 32 new tests (18 in-memory + 14 Postgres); Postgres set gated on `AUTHZ_POSTGRES_URL`.
+
+### Bumped
+- Dependency on `flametrench-ids>=0.2.0rc2` (the new `shr` prefix).
+
 ## [v0.2.0rc2] — 2026-04-27
 
 ### Added

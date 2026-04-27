@@ -614,6 +614,76 @@ CREATE UNIQUE INDEX org_slug_unique ON org (slug)
     WHERE slug IS NOT NULL;
 
 -- ===========================================================================
+-- v0.2 additions: share tokens per ADR 0012 (Proposed)
+-- ===========================================================================
+--
+-- A share grants the bearer of an opaque short-TTL token resource-scoped
+-- access to a single (object_type, object_id) at a given relation. The
+-- bearer is NOT promoted to an authenticated principal — they receive
+-- only the verified relation on the verified object. Hosts MUST NOT
+-- treat a share-bearer as a `usr_id` for any other surface.
+--
+-- Token storage matches `ses`: SHA-256 of the bearer token persisted as
+-- 32 raw bytes. The plaintext token is returned ONCE on createShare and
+-- never persisted. Constant-time comparison on verify.
+--
+-- `expires_at` is required and bounded above by 1 year per ADR 0012.
+-- `single_use` shares set `consumed_at` transactionally on first verify;
+-- a race between two concurrent verifies of a single-use token MUST
+-- yield exactly one success and exactly one ShareConsumedError.
+
+CREATE TABLE shr (
+    id            UUID PRIMARY KEY,
+    token_hash    BYTEA NOT NULL,
+    object_type   TEXT NOT NULL
+                    CHECK (object_type ~ '^[a-z]{2,6}$'),
+    object_id     UUID NOT NULL,
+    relation      TEXT NOT NULL
+                    CHECK (relation ~ '^[a-z_]{2,32}$'),
+    created_by    UUID NOT NULL REFERENCES usr(id),
+    expires_at    TIMESTAMPTZ NOT NULL,
+    single_use    BOOLEAN NOT NULL DEFAULT FALSE,
+    consumed_at   TIMESTAMPTZ,
+    revoked_at    TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CHECK (octet_length(token_hash) = 32),
+    CHECK (expires_at > created_at),
+    CHECK (consumed_at IS NULL OR single_use = TRUE),
+    CHECK (consumed_at IS NULL OR consumed_at >= created_at),
+    CHECK (revoked_at  IS NULL OR revoked_at  >= created_at),
+    -- 1-year ceiling on share lifetime per ADR 0012. Adopters MAY
+    -- enforce a tighter cap at the application layer.
+    CHECK (expires_at <= created_at + INTERVAL '365 days')
+);
+
+-- Two indexes on token_hash by design:
+--
+-- (1) The partial-unique index enforces "no two ACTIVE shares share a
+--     token hash" — the property that matters for security. Consumed and
+--     revoked rows are excluded so a re-issued token (after a 256-bit
+--     entropy collision, vanishingly unlikely but not impossible) is not
+--     blocked by a defunct row.
+CREATE UNIQUE INDEX shr_token_hash_active_idx ON shr (token_hash)
+    WHERE revoked_at IS NULL AND consumed_at IS NULL;
+-- (2) The non-partial index serves the verify hot path: lookups need to
+--     find consumed / revoked / expired rows so the SDK can return the
+--     correct error class (ShareRevokedError vs ShareConsumedError vs
+--     ShareExpiredError vs InvalidShareTokenError) per ADR 0012's spec
+--     ordering. A query `SELECT … WHERE token_hash = $1` cannot use the
+--     partial index above without also matching its predicate, so a
+--     plain index is required.
+CREATE INDEX shr_token_hash_idx ON shr (token_hash);
+
+-- "Show me all shares minted on this resource" — the listSharesForObject
+-- enumeration path.
+CREATE INDEX shr_object_idx ON shr (object_type, object_id);
+
+-- "Sweep expired shares" — operational cleanup; not on the verify hot path.
+CREATE INDEX shr_expires_idx ON shr (expires_at)
+    WHERE revoked_at IS NULL;
+
+-- ===========================================================================
 -- v0.2 note: rewrite rules (ADR 0007)
 -- ===========================================================================
 --

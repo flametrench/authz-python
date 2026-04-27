@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flametrench-authz"
-version = "0.2.0rc2"
+version = "0.2.0rc3"
 description = "Authorization primitives for Flametrench: relational tuples and exact-match check(). Spec-conformant; no rewrite rules in v0.1."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "flametrench-ids>=0.1.0",
+    "flametrench-ids>=0.2.0rc2",
 ]
 
 [project.optional-dependencies]
