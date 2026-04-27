@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flametrench-authz"
-version = "0.2.0rc1"
+version = "0.2.0rc2"
 description = "Authorization primitives for Flametrench: relational tuples and exact-match check(). Spec-conformant; no rewrite rules in v0.1."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -31,6 +31,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "psycopg[binary]>=3.1",
+]
+postgres = [
+    "psycopg[binary]>=3.1",
 ]
 
 [project.urls]
