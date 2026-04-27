@@ -395,15 +395,20 @@ class PostgresShareStore:
 
     @contextmanager
     def _tx(self) -> Iterator[Any]:
-        try:
+        """Run the wrapped block inside an explicit transaction.
+
+        Uses psycopg3's ``connection.transaction()`` context manager
+        rather than ``commit()``/``rollback()`` directly. This is
+        correct under BOTH ``autocommit=False`` (the default) AND
+        ``autocommit=True``: under autocommit=True, the bare
+        commit-on-success / rollback-on-error pattern would NOT hold
+        a ``FOR UPDATE`` row lock across statements, breaking the
+        verify_share_token race-correctness contract.
+        ``transaction()`` issues an explicit ``BEGIN``/``COMMIT``
+        regardless of the connection's autocommit setting.
+        """
+        with self._conn.transaction():
             yield self._conn
-            self._conn.commit()
-        except Exception:
-            try:
-                self._conn.rollback()
-            except Exception:
-                pass
-            raise
 
     def create_share(
         self,

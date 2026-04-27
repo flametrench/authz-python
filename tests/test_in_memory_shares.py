@@ -169,3 +169,33 @@ def test_list_shares_for_object_paginates(store, alice, project42):
     page2 = store.list_shares_for_object("proj", project42, cursor=page1.next_cursor, limit=10)
     ids = {s.id for s in page1.data} | {s.id for s in page2.data}
     assert len(ids) == 3
+
+
+def test_consumed_then_expired_yields_consumed(alice, project42):
+    """Spec error precedence: consumed > expired."""
+    now = [datetime(2026, 4, 27, tzinfo=timezone.utc)]
+    s = InMemoryShareStore(clock=lambda: now[0])
+    r = s.create_share("proj", project42, "viewer", alice, 60, single_use=True)
+    s.verify_share_token(r.token)
+    now[0] += timedelta(seconds=61)
+    with pytest.raises(ShareConsumedError):
+        s.verify_share_token(r.token)
+
+
+def test_created_by_round_trips(store, alice, project42):
+    r = store.create_share("proj", project42, "viewer", alice, 600)
+    fetched = store.get_share(r.share.id)
+    assert fetched.created_by == alice
+
+
+def test_list_includes_revoked_and_consumed_shares(store, alice, project42):
+    """listSharesForObject returns shares regardless of state."""
+    active_r = store.create_share("proj", project42, "viewer", alice, 600)
+    revoked_r = store.create_share("proj", project42, "viewer", alice, 600)
+    consumed_r = store.create_share("proj", project42, "viewer", alice, 600, single_use=True)
+    store.revoke_share(revoked_r.share.id)
+    store.verify_share_token(consumed_r.token)
+    page = store.list_shares_for_object("proj", project42)
+    ids = {s.id for s in page.data}
+    assert {active_r.share.id, revoked_r.share.id, consumed_r.share.id} <= ids
+    assert len(ids) == 3

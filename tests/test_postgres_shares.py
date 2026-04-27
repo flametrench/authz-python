@@ -178,3 +178,90 @@ def test_list_shares_for_object_paginates(store, alice, project42):
     )
     ids = {s.id for s in page1.data} | {s.id for s in page2.data}
     assert len(ids) == 3
+
+
+# ─── Spec error precedence: consumed > expired ───
+# (revoked > consumed > expired — revoked covered above; consumed-vs-expired below)
+
+
+def test_consumed_then_expired_yields_consumed(conn, alice, project42):
+    """A single-use share that was consumed AND then expired raises
+    ShareConsumedError — the consumed state takes precedence over expired."""
+    now = [datetime(2026, 4, 27, tzinfo=timezone.utc)]
+    s = PostgresShareStore(conn, clock=lambda: now[0])
+    r = s.create_share("proj", project42, "viewer", alice, 60, single_use=True)
+    s.verify_share_token(r.token)  # consumes
+    now[0] += timedelta(seconds=61)  # now also expired
+    with pytest.raises(ShareConsumedError):
+        s.verify_share_token(r.token)
+
+
+# ─── createdBy round-trip ───
+
+
+def test_created_by_round_trips_through_postgres(store, alice, project42):
+    """Confirm that the wire-format usr_<hex> we passed in is exactly
+    what comes back from getShare — guards against an encode/decode
+    mis-wire in the rowToShare mapper."""
+    r = store.create_share("proj", project42, "viewer", alice, 600)
+    fetched = store.get_share(r.share.id)
+    assert fetched.created_by == alice
+    assert fetched.created_by.startswith("usr_")
+
+
+# ─── Listing returns shares in every state ───
+
+
+def test_list_includes_revoked_and_consumed_shares(store, alice, project42):
+    """spec/docs/shares.md: listSharesForObject returns shares regardless
+    of consumed/revoked/expired state. Used by admin UIs to enumerate all
+    shares ever minted on a resource."""
+    active_r = store.create_share("proj", project42, "viewer", alice, 600)
+    revoked_r = store.create_share("proj", project42, "viewer", alice, 600)
+    consumed_r = store.create_share(
+        "proj", project42, "viewer", alice, 600, single_use=True,
+    )
+    store.revoke_share(revoked_r.share.id)
+    store.verify_share_token(consumed_r.token)
+    page = store.list_shares_for_object("proj", project42)
+    ids = {s.id for s in page.data}
+    assert active_r.share.id in ids
+    assert revoked_r.share.id in ids
+    assert consumed_r.share.id in ids
+    assert len(ids) == 3
+
+
+# ─── autocommit=True regression test (Python-specific) ───
+
+
+def test_verify_works_under_autocommit_true():
+    """Python `_tx` must work correctly under autocommit=True. Bare
+    commit-on-success / rollback-on-error against a connection with
+    autocommit=True would NOT hold a FOR UPDATE row lock between the
+    SELECT and the consume UPDATE; the fix uses psycopg's
+    connection.transaction() context manager which issues an explicit
+    BEGIN regardless of autocommit setting."""
+    assert POSTGRES_URL is not None
+    c = psycopg.connect(POSTGRES_URL, autocommit=True)
+    try:
+        # Reset schema. Under autocommit=True, DDL needs no commit() call.
+        with c.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;")
+            cur.execute(SCHEMA_SQL)
+        s = PostgresShareStore(c)
+        u = generate("usr")
+        with c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO usr (id, status) VALUES (%s, 'active')",
+                (decode(u).uuid,),
+            )
+        proj = decode(generate("usr")).uuid
+        # Single-use happy path — exercises the multi-statement consume.
+        r = s.create_share("proj", proj, "viewer", u, 600, single_use=True)
+        v = s.verify_share_token(r.token)
+        assert v.share_id == r.share.id
+        # Second verify must see consumed_at and raise ShareConsumedError.
+        with pytest.raises(ShareConsumedError):
+            s.verify_share_token(r.token)
+    finally:
+        c.close()
