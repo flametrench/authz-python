@@ -1,8 +1,10 @@
 # flametrench-authz
 
-Python SDK for the [Flametrench v0.1](https://github.com/flametrench/spec) authorization specification: relational tuples and exact-match `check()`. No rewrite rules in v0.1; that's a v0.2+ feature per [ADR 0001](https://github.com/flametrench/spec/blob/main/decisions/0001-authorization-model.md).
+Python SDK for the [Flametrench](https://github.com/flametrench/spec) authorization specification: relational tuples and exact-match `check()`. Exact-match is the default — no implicit rewriting at the API boundary ([ADR 0001](https://github.com/flametrench/spec/blob/main/decisions/0001-authorization-model.md)). v0.2 adds opt-in rewrite rules ([ADR 0007](https://github.com/flametrench/spec/blob/main/decisions/0007-rewrite-rules.md)) — `computed_userset` (role implication) and `tuple_to_userset` (parent-child inheritance) — for adopters who want hierarchies. Group expansion remains deferred.
 
-The same fixture corpus that gates `@flametrench/authz` (Node) and `flametrench/authz` (PHP) runs here. Cross-language interop is enforced by the test suite.
+The same fixture corpus that gates `@flametrench/authz` (Node), `flametrench/authz` (PHP), and `dev.flametrench:authz` (Java) runs here. Cross-language interop is enforced by the test suite.
+
+**Status:** v0.2.0rc4 (release candidate). Includes `ShareStore` ([ADR 0012](https://github.com/flametrench/spec/blob/main/decisions/0012-share-tokens.md)) and Postgres-backed adapters (`PostgresTupleStore`, `PostgresShareStore`).
 
 ```python
 from flametrench_authz import InMemoryTupleStore
