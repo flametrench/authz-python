@@ -230,3 +230,42 @@ def test_wire_format_object_id_with_app_defined_prefix(store, alice):
     assert result.allowed is True
     listed = store.list_tuples_by_object("proj", wire_proj)
     assert len(listed.data) == 1
+
+
+# ─── Outer-transaction nesting (ADR 0013) ───
+
+def test_create_tuple_cooperates_with_outer_transaction(store, conn, alice):
+    project42 = _new_object_id()
+    nested = PostgresTupleStore(conn)
+    with conn.transaction():
+        nested.create_tuple("usr", alice, "viewer", "proj", project42)
+    result = store.check("usr", alice, "viewer", "proj", project42)
+    assert result.allowed is True
+
+
+def test_outer_rollback_undoes_inner_create_tuple(store, conn, alice):
+    project42 = _new_object_id()
+    nested = PostgresTupleStore(conn)
+    try:
+        with conn.transaction():
+            nested.create_tuple("usr", alice, "viewer", "proj", project42)
+            raise RuntimeError("force rollback")
+    except RuntimeError:
+        pass
+    result = store.check("usr", alice, "viewer", "proj", project42)
+    assert result.allowed is False
+
+
+def test_outer_can_commit_after_first_rolls_back_savepoint_dup_tuple(
+    store, conn, alice, bob,
+):
+    project42 = _new_object_id()
+    # Seed a tuple so the next create with the same natural key conflicts.
+    store.create_tuple("usr", alice, "viewer", "proj", project42)
+    with conn.transaction():
+        nested = PostgresTupleStore(conn)
+        with pytest.raises(DuplicateTupleError):
+            nested.create_tuple("usr", alice, "viewer", "proj", project42)
+        # Outer txn still usable.
+        survivor = nested.create_tuple("usr", bob, "viewer", "proj", project42)
+        assert survivor.subject_id == bob

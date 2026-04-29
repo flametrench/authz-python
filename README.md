@@ -6,7 +6,7 @@ Python SDK for the [Flametrench](https://github.com/flametrench/spec) authorizat
 
 The same fixture corpus that gates `@flametrench/authz` (Node), `flametrench/authz` (PHP), and `dev.flametrench:authz` (Java) runs here. Cross-language interop is enforced by the test suite.
 
-**Status:** v0.2.0rc4 (release candidate). Includes `ShareStore` ([ADR 0012](https://github.com/flametrench/spec/blob/main/decisions/0012-share-tokens.md)) and Postgres-backed adapters (`PostgresTupleStore`, `PostgresShareStore`).
+**Status:** v0.2.0rc5 (release candidate). Includes `ShareStore` ([ADR 0012](https://github.com/flametrench/spec/blob/main/decisions/0012-share-tokens.md)) and Postgres-backed adapters (`PostgresTupleStore`, `PostgresShareStore`). Per [ADR 0013](https://github.com/flametrench/spec/blob/main/decisions/0013-postgres-adapter-transaction-nesting.md) the Postgres adapters cooperate with adopter-side outer transactions via savepoints when nested (psycopg3 `connection.transaction()` handles this automatically).
 
 ```python
 from flametrench_authz import InMemoryTupleStore

@@ -297,3 +297,40 @@ def test_verify_works_under_autocommit_true():
             s.verify_share_token(r.token)
     finally:
         c.close()
+
+
+# ─── Outer-transaction nesting (ADR 0013) ───
+
+def test_create_share_cooperates_with_outer_transaction(store, conn, alice, project42):
+    nested = PostgresShareStore(conn)
+    with conn.transaction():
+        r = nested.create_share("proj", project42, "viewer", alice, 600)
+    assert store.get_share(r.share.id).id == r.share.id
+
+
+def test_outer_rollback_undoes_inner_create_share(store, conn, alice, project42):
+    nested = PostgresShareStore(conn)
+    share_id = None
+    try:
+        with conn.transaction():
+            r = nested.create_share("proj", project42, "viewer", alice, 600)
+            share_id = r.share.id
+            raise RuntimeError("force rollback")
+    except RuntimeError:
+        pass
+    with pytest.raises(ShareNotFoundError):
+        store.get_share(share_id)
+
+
+def test_outer_can_commit_after_first_rolls_back_savepoint_revoked(
+    store, conn, alice, project42,
+):
+    r = store.create_share("proj", project42, "viewer", alice, 600)
+    store.revoke_share(r.share.id)
+    with conn.transaction():
+        nested = PostgresShareStore(conn)
+        with pytest.raises(ShareRevokedError):
+            nested.verify_share_token(r.token)
+        # Outer txn still usable.
+        r2 = nested.create_share("proj", project42, "viewer", alice, 600)
+    assert store.get_share(r2.share.id).id == r2.share.id

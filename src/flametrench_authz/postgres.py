@@ -178,59 +178,63 @@ class PostgresTupleStore:
         object_uuid = _object_id_to_uuid(object_id)
         created_by_uuid = _wire_to_uuid(created_by) if created_by is not None else None
         now = self._now()
-        try:
+        # ADR 0013: connection.transaction() opens BEGIN when standalone
+        # and SAVEPOINT when nested. ON CONFLICT DO NOTHING avoids raising
+        # 23505 inside an outer transaction (the previous catch-and-SELECT
+        # pattern would run the SELECT inside a Postgres-aborted txn).
+        with self._conn.transaction():
             with self._conn.cursor() as cur:
                 cur.execute(
                     f"""
                     INSERT INTO tup (id, subject_type, subject_id, relation, object_type, object_id, created_at, created_by)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (subject_type, subject_id, relation, object_type, object_id) DO NOTHING
                     RETURNING {_TUP_COLS}
                     """,
                     (tup_uuid, subject_type, subject_uuid, relation, object_type, object_uuid, now, created_by_uuid),
                 )
                 row = cur.fetchone()
-                self._conn.commit()
-                assert row is not None
-                return _row_to_tuple(row)
-        except Exception as exc:
-            self._conn.rollback()
-            if self._is_unique_violation(exc):
-                with self._conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT id FROM tup
-                        WHERE subject_type = %s AND subject_id = %s AND relation = %s
-                          AND object_type = %s AND object_id = %s
-                        """,
-                        (subject_type, subject_uuid, relation, object_type, object_uuid),
+                if row is not None:
+                    return _row_to_tuple(row)
+                cur.execute(
+                    """
+                    SELECT id FROM tup
+                    WHERE subject_type = %s AND subject_id = %s AND relation = %s
+                      AND object_type = %s AND object_id = %s
+                    """,
+                    (subject_type, subject_uuid, relation, object_type, object_uuid),
+                )
+                existing = cur.fetchone()
+                if existing is None:
+                    # Race: another connection inserted-then-deleted between
+                    # our ON CONFLICT and the SELECT. Surface a generic error.
+                    raise RuntimeError(
+                        "Tuple natural-key conflict resolved after insert lost the row; retry."
                     )
-                    existing = cur.fetchone()
-                if existing is not None:
-                    raise DuplicateTupleError(
-                        "Tuple with identical natural key already exists",
-                        existing_tuple_id=_encode("tup", str(existing[0])),
-                    ) from exc
-            raise
+                raise DuplicateTupleError(
+                    "Tuple with identical natural key already exists",
+                    existing_tuple_id=_encode("tup", str(existing[0])),
+                )
 
     def delete_tuple(self, tuple_id: str) -> None:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM tup WHERE id = %s",
-                (_wire_to_uuid(tuple_id),),
-            )
-            count = cur.rowcount
-        self._conn.commit()
+        with self._conn.transaction():
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM tup WHERE id = %s",
+                    (_wire_to_uuid(tuple_id),),
+                )
+                count = cur.rowcount
         if count == 0:
             raise TupleNotFoundError(f"Tuple {tuple_id} not found")
 
     def cascade_revoke_subject(self, subject_type: str, subject_id: str) -> int:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM tup WHERE subject_type = %s AND subject_id = %s",
-                (subject_type, _wire_to_uuid(subject_id)),
-            )
-            count = cur.rowcount
-        self._conn.commit()
+        with self._conn.transaction():
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM tup WHERE subject_type = %s AND subject_id = %s",
+                    (subject_type, _wire_to_uuid(subject_id)),
+                )
+                count = cur.rowcount
         return count or 0
 
     # ─── check / check_any ───
@@ -499,22 +503,22 @@ class PostgresShareStore:
         token_hash = _hash_token_bytes(token)
         now = self._now()
         expires_at = now + timedelta(seconds=expires_in_seconds)
-        with self._conn.cursor() as cur:
-            cur.execute(
-                f"""
-                INSERT INTO shr (id, token_hash, object_type, object_id, relation,
-                                 created_by, expires_at, single_use, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING {_SHR_COLS}
-                """,
-                (
-                    share_uuid, token_hash, object_type,
-                    _object_id_to_uuid(object_id), relation,
-                    created_by_uuid, expires_at, single_use, now,
-                ),
-            )
-            row = cur.fetchone()
-        self._conn.commit()
+        with self._conn.transaction():
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO shr (id, token_hash, object_type, object_id, relation,
+                                     created_by, expires_at, single_use, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING {_SHR_COLS}
+                    """,
+                    (
+                        share_uuid, token_hash, object_type,
+                        _object_id_to_uuid(object_id), relation,
+                        created_by_uuid, expires_at, single_use, now,
+                    ),
+                )
+                row = cur.fetchone()
         assert row is not None
         return CreateShareResult(share=_row_to_share(row), token=token)
 
@@ -585,17 +589,17 @@ class PostgresShareStore:
 
     def revoke_share(self, share_id: str) -> Share:
         share_uuid = _wire_to_uuid(share_id)
-        with self._conn.cursor() as cur:
-            cur.execute(
-                f"""
-                UPDATE shr SET revoked_at = COALESCE(revoked_at, %s)
-                WHERE id = %s
-                RETURNING {_SHR_COLS}
-                """,
-                (self._now(), share_uuid),
-            )
-            row = cur.fetchone()
-        self._conn.commit()
+        with self._conn.transaction():
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE shr SET revoked_at = COALESCE(revoked_at, %s)
+                    WHERE id = %s
+                    RETURNING {_SHR_COLS}
+                    """,
+                    (self._now(), share_uuid),
+                )
+                row = cur.fetchone()
         if row is None:
             raise ShareNotFoundError(f"Share {share_id} not found")
         return _row_to_share(row)
