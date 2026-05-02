@@ -54,6 +54,12 @@ from .errors import (
     TupleNotFoundError,
 )
 from .patterns import RELATION_NAME_PATTERN, TYPE_PREFIX_PATTERN
+from .rewrite_rules import (
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_FAN_OUT,
+    Rules,
+    evaluate,
+)
 from .shares import (
     SHARE_MAX_TTL_SECONDS,
     CreateShareResult,
@@ -97,6 +103,23 @@ def _object_id_to_uuid(object_id: str) -> str:
     return object_id
 
 
+def _subject_id_to_uuid(subject_id: str) -> str:
+    """v0.3 (ADR 0017) — accept subject ids in any of three shapes:
+    wire format with ``usr_`` (the v0.1/v0.2 default), wire format with
+    any registered prefix (``org_<hex>`` for ``tuple_to_userset``
+    parent hops), or bare canonical UUID (passthrough). Mirrors
+    :func:`_object_id_to_uuid`.
+    """
+    if _OBJECT_ID_WIRE_RE.match(subject_id):
+        return _decode_any(subject_id).uuid
+    return subject_id
+
+
+def _uuid_hyphens_to_bare(hyphenated: str) -> str:
+    """UUID ``01234567-89ab-...`` → bare 32-hex ``0123456789ab...``."""
+    return hyphenated.replace("-", "")
+
+
 def _row_to_tuple(row: Sequence[Any]) -> Tuple:
     """Map a tup row to the public Tuple dataclass.
 
@@ -129,9 +152,20 @@ class PostgresTupleStore:
         connection: Any,
         *,
         clock: Callable[[], datetime] | None = None,
+        rules: Rules | None = None,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+        max_fan_out: int = DEFAULT_MAX_FAN_OUT,
     ) -> None:
+        """v0.3 (ADR 0017) — optional ``rules`` parameter mirroring
+        :class:`InMemoryTupleStore`. With ``rules`` ``None``, ``check()``
+        is exact-match only (v0.2-identical). With rules, expansion runs
+        via iterative async-against-Postgres SELECT — same algorithm
+        ADR 0007 specifies for in-memory."""
         self._conn = connection
         self._clock = clock or _default_clock
+        self._rules = rules
+        self._max_depth = max_depth
+        self._max_fan_out = max_fan_out
 
     def _now(self) -> datetime:
         return self._clock()
@@ -174,7 +208,7 @@ class PostgresTupleStore:
     ) -> Tuple:
         self._validate(relation, object_type)
         tup_uuid = _decode(_generate("tup")).uuid
-        subject_uuid = _wire_to_uuid(subject_id)
+        subject_uuid = _subject_id_to_uuid(subject_id)
         object_uuid = _object_id_to_uuid(object_id)
         created_by_uuid = _wire_to_uuid(created_by) if created_by is not None else None
         now = self._now()
@@ -232,7 +266,7 @@ class PostgresTupleStore:
             with self._conn.cursor() as cur:
                 cur.execute(
                     "DELETE FROM tup WHERE subject_type = %s AND subject_id = %s",
-                    (subject_type, _wire_to_uuid(subject_id)),
+                    (subject_type, _subject_id_to_uuid(subject_id)),
                 )
                 count = cur.rowcount
         return count or 0
@@ -247,8 +281,30 @@ class PostgresTupleStore:
         object_type: str,
         object_id: str,
     ) -> CheckResult:
-        return self.check_any(
-            subject_type, subject_id, [relation], object_type, object_id,
+        # v0.1 fast path: direct natural-key lookup.
+        direct = self._direct_lookup(subject_type, subject_id, relation, object_type, object_id)
+        if direct is not None:
+            return CheckResult(allowed=True, matched_tuple_id=direct)
+        # ADR 0017 path: rule expansion only on direct miss AND when
+        # rules are registered. With rules=None, behavior is byte-
+        # identical to v0.2.
+        if self._rules is None:
+            return CheckResult(allowed=False, matched_tuple_id=None)
+        result = evaluate(
+            rules=self._rules,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            relation=relation,
+            object_type=object_type,
+            object_id=object_id,
+            direct_lookup=self._direct_lookup,
+            list_by_object=self._list_by_object,
+            max_depth=self._max_depth,
+            max_fan_out=self._max_fan_out,
+        )
+        return CheckResult(
+            allowed=result.allowed,
+            matched_tuple_id=result.matched_tuple_id,
         )
 
     def check_any(
@@ -261,29 +317,100 @@ class PostgresTupleStore:
     ) -> CheckResult:
         if not relations:
             raise EmptyRelationSetError()
+        # Fast path: when no rules are registered, a single SELECT with
+        # `relation = ANY(...)` short-circuits the whole set in one
+        # round trip. Preserves v0.2 behavior.
+        if self._rules is None:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id FROM tup
+                    WHERE subject_type = %s AND subject_id = %s
+                      AND relation = ANY(%s) AND object_type = %s AND object_id = %s
+                    LIMIT 1
+                    """,
+                    (
+                        subject_type,
+                        _subject_id_to_uuid(subject_id),
+                        list(relations),
+                        object_type,
+                        _object_id_to_uuid(object_id),
+                    ),
+                )
+                row = cur.fetchone()
+            if row is None:
+                return CheckResult(allowed=False, matched_tuple_id=None)
+            return CheckResult(
+                allowed=True,
+                matched_tuple_id=_encode("tup", str(row[0])),
+            )
+        # With rules, evaluate each relation in turn. Per ADR 0017 no
+        # union-of-rules optimization in v0.3.
+        for relation in relations:
+            result = self.check(subject_type, subject_id, relation, object_type, object_id)
+            if result.allowed:
+                return result
+        return CheckResult(allowed=False, matched_tuple_id=None)
+
+    # ─── Rule-evaluator callbacks (ADR 0017) ───
+
+    def _direct_lookup(
+        self,
+        subject_type: str,
+        subject_id: str,
+        relation: str,
+        object_type: str,
+        object_id: str,
+    ) -> str | None:
         with self._conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id FROM tup
                 WHERE subject_type = %s AND subject_id = %s
-                  AND relation = ANY(%s) AND object_type = %s AND object_id = %s
+                  AND relation = %s AND object_type = %s AND object_id = %s
                 LIMIT 1
                 """,
                 (
                     subject_type,
-                    _wire_to_uuid(subject_id),
-                    list(relations),
+                    _subject_id_to_uuid(subject_id),
+                    relation,
                     object_type,
                     _object_id_to_uuid(object_id),
                 ),
             )
             row = cur.fetchone()
-        if row is None:
-            return CheckResult(allowed=False, matched_tuple_id=None)
-        return CheckResult(
-            allowed=True,
-            matched_tuple_id=_encode("tup", str(row[0])),
+        return _encode("tup", str(row[0])) if row is not None else None
+
+    def _list_by_object(
+        self,
+        object_type: str,
+        object_id: str,
+        relation: str | None,
+    ) -> Iterator[tuple[str, str, str]]:
+        """Enumerate tuples on (object, relation). Used by tuple_to_userset.
+
+        Yields (subject_type, subject_id, tup_id) triples. ``subject_id``
+        is wire-format prefixed with ``subject_type`` (e.g.
+        ``org_<hex>``) so the evaluator can pass it through as the
+        next-hop ``object_id`` for further lookups.
+        """
+        sql = (
+            "SELECT id, subject_type, subject_id FROM tup "
+            "WHERE object_type = %s AND object_id = %s"
         )
+        params: list[Any] = [object_type, _object_id_to_uuid(object_id)]
+        if relation is not None:
+            sql += " AND relation = %s"
+            params.append(relation)
+        with self._conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+        for row in rows:
+            sub_type = str(row[1])
+            # pg returns UUID columns as canonical hyphenated; the wire
+            # format is bare hex.
+            sub_id_wire = f"{sub_type}_{_uuid_hyphens_to_bare(str(row[2]))}"
+            yield (sub_type, sub_id_wire, _encode("tup", str(row[0])))
 
     # ─── Read accessors ───
 
@@ -307,7 +434,7 @@ class PostgresTupleStore:
         limit: int = 50,
     ) -> Page[Tuple]:
         limit = min(limit, 200)
-        params: list[Any] = [subject_type, _wire_to_uuid(subject_id)]
+        params: list[Any] = [subject_type, _subject_id_to_uuid(subject_id)]
         sql = (
             f"SELECT {_TUP_COLS} FROM tup "
             "WHERE subject_type = %s AND subject_id = %s"

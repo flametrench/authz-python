@@ -52,11 +52,15 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- only authenticate via SSO, migration scenarios).
 
 CREATE TABLE usr (
-    id          UUID PRIMARY KEY,
-    status      TEXT NOT NULL DEFAULT 'active'
-                  CHECK (status IN ('active', 'suspended', 'revoked')),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    id            UUID PRIMARY KEY,
+    status        TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'suspended', 'revoked')),
+    -- Optional human-meaningful render string (ADR 0014, v0.2). Spec is
+    -- permissive: no length cap, no uniqueness, no normalization. Adopters
+    -- that need stricter rules apply them at the application layer.
+    display_name  TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ===========================================================================
@@ -327,9 +331,15 @@ CREATE INDEX inv_pending_idx  ON inv (identifier) WHERE status = 'pending';
 -- implication, no inheritance, no rewrite rules. Those are deferred to
 -- v0.2+ once real usage tells us which derivations matter.
 --
--- subject_type is constrained to 'usr' in v0.1. 'grp' (groups) is a
--- v0.2+ subject type and will allow group-subject tuples to expand to
--- individual members at check time.
+-- subject_type was constrained to 'usr' in v0.1. v0.3 (ADR 0017) relaxes
+-- the constraint to the same `^[a-z]{2,6}$` shape used by object_type:
+-- `tuple_to_userset` rewrite rules (ADR 0007) require object→object
+-- tuples (e.g. `(org_X, parent_org, proj_Y)` where the subject is an
+-- `org_`), which the v0.1/v0.2 constraint silently blocked. The
+-- application contract still recommends 'usr' for principal-grant
+-- tuples; non-'usr' subject_types are reserved for the
+-- `tuple_to_userset` hop pattern. Group-subject expansion ('grp') and
+-- per-prefix authz are still future work.
 --
 -- object_type is unconstrained at the type level: applications freely
 -- tup custom object types (e.g. 'project', 'doc'). The format pattern
@@ -338,7 +348,7 @@ CREATE INDEX inv_pending_idx  ON inv (identifier) WHERE status = 'pending';
 CREATE TABLE tup (
     id            UUID PRIMARY KEY,
     subject_type  TEXT NOT NULL
-                    CHECK (subject_type IN ('usr')),
+                    CHECK (subject_type ~ '^[a-z]{2,6}$'),
     subject_id    UUID NOT NULL,
     relation      TEXT NOT NULL
                     CHECK (relation ~ '^[a-z_]{2,32}$'),
@@ -684,6 +694,89 @@ CREATE INDEX shr_expires_idx ON shr (expires_at)
     WHERE revoked_at IS NULL;
 
 -- ===========================================================================
+-- v0.3 additions: personal access tokens per ADR 0016 (Proposed)
+-- ===========================================================================
+--
+-- A PAT is a long-lived bearer credential bound to a `usr_id`, intended
+-- for non-interactive use (CLI / CI / server-to-server). The wire token
+-- is `pat_<32hex-id>_<base64url-secret>`: the id half is the indexed
+-- handle (this row's primary key), the secret half is verified by
+-- Argon2id against `secret_hash`. The plaintext token is returned ONCE
+-- on createPat and never persisted.
+--
+-- PATs are NOT a cred variant. They have a different lifecycle (no
+-- rotation, no replaces chain), a different verification path (bearer
+-- secret, not interactive credential), and a different audit shape
+-- (`auth.kind = 'pat'`). They are stored separately to keep these
+-- semantics distinct from the cred model.
+--
+-- Verification protocol (normative; see ADR 0016 §"Verification semantics"):
+--
+--   1. The auth middleware inspects the bearer prefix. `pat_…` routes
+--      to verifyPatToken; other prefixes route to session / share
+--      verifiers respectively.
+--   2. Split the token on the FIRST underscore after `pat_<32hex>` to
+--      recover the id segment and the secret segment.
+--   3. SELECT … FROM pat WHERE id = $id_decoded.
+--   4. If the row is missing, return InvalidPatTokenError. The error
+--      message MUST conflate "no such row" with "wrong secret" to
+--      avoid a token-presence timing oracle.
+--   5. If revoked_at IS NOT NULL, return PatRevokedError.
+--   6. If expires_at IS NOT NULL AND expires_at <= now(), return
+--      PatExpiredError.
+--   7. Argon2id-verify the secret segment against secret_hash.
+--      Mismatch → InvalidPatTokenError (same shape as step 4).
+--   8. Update last_used_at. The SDK MAY coalesce these writes within
+--      a configurable window (60s default) to avoid a write-per-
+--      request hot path.
+--
+-- The error ordering (revoked > expired > invalid_secret) matches the
+-- share-token convention from ADR 0012.
+
+CREATE TABLE pat (
+    id            UUID PRIMARY KEY,
+    usr_id        UUID NOT NULL REFERENCES usr(id),
+    name          TEXT NOT NULL,
+
+    -- Application-defined scope claims. The spec does not pin
+    -- vocabulary; adopters' authz layer interprets the strings.
+    scope         TEXT[] NOT NULL DEFAULT '{}',
+
+    -- PHC-encoded Argon2id hash of the base64url secret segment.
+    -- Spec pins the same minimum parameters as cred.password_hash:
+    -- memory >= 19 MiB, iterations >= 2, parallelism >= 1 (OWASP floor).
+    -- The plaintext secret leaves the server exactly once (createPat).
+    secret_hash   TEXT NOT NULL,
+
+    expires_at    TIMESTAMPTZ,
+    last_used_at  TIMESTAMPTZ,
+    revoked_at    TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CHECK (expires_at   IS NULL OR expires_at   > created_at),
+    CHECK (last_used_at IS NULL OR last_used_at >= created_at),
+    CHECK (revoked_at   IS NULL OR revoked_at   >= created_at),
+    -- `name` is a human label shown in the user's token list. Adopters
+    -- MAY enforce a tighter cap; 120 is the spec ceiling.
+    CHECK (length(name) BETWEEN 1 AND 120)
+);
+
+-- "List PATs for this user" — primary enumeration path.
+CREATE INDEX pat_usr_idx ON pat (usr_id, created_at DESC);
+
+-- "Active PATs only" — speeds up status='active' filter on the list path.
+CREATE INDEX pat_usr_active_idx ON pat (usr_id, created_at DESC)
+    WHERE revoked_at IS NULL;
+
+-- "Sweep expired PATs" — operational cleanup; not on the verify hot
+-- path. The verify path looks up by primary key (id), so no token-hash
+-- index is needed (contrast with `ses` and `shr`, which look up by
+-- token hash because their wire format is opaque).
+CREATE INDEX pat_expires_idx ON pat (expires_at)
+    WHERE revoked_at IS NULL AND expires_at IS NOT NULL;
+
+-- ===========================================================================
 -- v0.2 note: rewrite rules (ADR 0007)
 -- ===========================================================================
 --
@@ -723,6 +816,10 @@ CREATE TRIGGER mem_touch  BEFORE UPDATE ON mem
 CREATE TRIGGER mfa_touch              BEFORE UPDATE ON mfa
     FOR EACH ROW EXECUTE FUNCTION flametrench_touch_updated_at();
 CREATE TRIGGER usr_mfa_policy_touch   BEFORE UPDATE ON usr_mfa_policy
+    FOR EACH ROW EXECUTE FUNCTION flametrench_touch_updated_at();
+
+-- v0.3:
+CREATE TRIGGER pat_touch              BEFORE UPDATE ON pat
     FOR EACH ROW EXECUTE FUNCTION flametrench_touch_updated_at();
 
 -- ses, inv, and tup are append-only / lifecycle-terminal; no updated_at.

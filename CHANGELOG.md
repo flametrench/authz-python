@@ -3,6 +3,23 @@
 All notable changes to `flametrench-authz` are recorded here.
 Spec-level changes live in [`spec/CHANGELOG.md`](https://github.com/flametrench/spec/blob/main/CHANGELOG.md).
 
+## [v0.3.0] — Unreleased (PyPI publish blocked)
+
+### Added (Postgres rewrite-rule evaluation, ADR 0017)
+- `PostgresTupleStore.__init__` accepts new optional `rules`, `max_depth`, `max_fan_out` kwargs mirroring `InMemoryTupleStore`. With `rules=None`, behavior is byte-identical to v0.2 (single SELECT with `relation = ANY(%s)` for the `check_any` fast path).
+- With `rules` set, `check()` evaluates rewrite rules via iterative expansion against Postgres — same algorithm `InMemoryTupleStore` uses.
+- New `_subject_id_to_uuid` accepts wire-format ids with any registered prefix (e.g. `org_<hex>`), not just `usr_<hex>`. Required for `tuple_to_userset` patterns where the parent hop is a non-`usr` object.
+- New `test_postgres_rewrite_rules.py` covers `computed_userset` chains, `tuple_to_userset` parent inheritance, cycle detection, depth limit, and `check_any` fast-path / rules-path.
+
+### Test infrastructure
+- `tests/postgres-schema.sql` re-synced from spec `reference/postgres.sql` to pick up the relaxed `tup.subject_type` constraint (now `^[a-z]{2,6}$` per ADR 0017 follow-up). The v0.1/v0.2 `subject_type IN ('usr')` constraint silently blocked `tuple_to_userset` patterns; lifting it is additive.
+
+### Required dependency bump
+- `flametrench-ids` constraint now `>=0.3.0` to track the v0.3 family.
+
+### Release status
+- Tagged in lockstep with the Node and PHP v0.3.0 cuts; PyPI publication remains externally blocked.
+
 ## [v0.2.0rc4] — 2026-04-27
 
 ### Fixed
