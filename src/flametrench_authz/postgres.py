@@ -103,15 +103,27 @@ def _object_id_to_uuid(object_id: str) -> str:
     return object_id
 
 
-def _subject_id_to_uuid(subject_id: str) -> str:
+def _subject_id_to_uuid(subject_id: str, subject_type: str | None = None) -> str:
     """v0.3 (ADR 0017) — accept subject ids in any of three shapes:
     wire format with ``usr_`` (the v0.1/v0.2 default), wire format with
     any registered prefix (``org_<hex>`` for ``tuple_to_userset``
     parent hops), or bare canonical UUID (passthrough). Mirrors
     :func:`_object_id_to_uuid`.
+
+    security-audit-v0.3.md M9: when a ``subject_type`` is supplied,
+    assert the wire-id's prefix matches it. Pre-fix this helper accepted
+    any ``<word>_<uuid>`` string, so a caller passing a stale
+    (subject_type, subject_id) pair where the id's prefix didn't match
+    the type was silently coerced.
     """
     if _OBJECT_ID_WIRE_RE.match(subject_id):
-        return _decode_any(subject_id).uuid
+        decoded = _decode_any(subject_id)
+        if subject_type is not None and decoded.type != subject_type:
+            raise InvalidFormatError(
+                f"subject_id {subject_id!r} prefix does not match subject_type {subject_type!r}",
+                field="subject_id",
+            )
+        return decoded.uuid
     return subject_id
 
 
@@ -208,7 +220,7 @@ class PostgresTupleStore:
     ) -> Tuple:
         self._validate(relation, object_type)
         tup_uuid = _decode(_generate("tup")).uuid
-        subject_uuid = _subject_id_to_uuid(subject_id)
+        subject_uuid = _subject_id_to_uuid(subject_id, subject_type)
         object_uuid = _object_id_to_uuid(object_id)
         created_by_uuid = _wire_to_uuid(created_by) if created_by is not None else None
         now = self._now()
@@ -266,7 +278,7 @@ class PostgresTupleStore:
             with self._conn.cursor() as cur:
                 cur.execute(
                     "DELETE FROM tup WHERE subject_type = %s AND subject_id = %s",
-                    (subject_type, _subject_id_to_uuid(subject_id)),
+                    (subject_type, _subject_id_to_uuid(subject_id, subject_type)),
                 )
                 count = cur.rowcount
         return count or 0
@@ -331,7 +343,7 @@ class PostgresTupleStore:
                     """,
                     (
                         subject_type,
-                        _subject_id_to_uuid(subject_id),
+                        _subject_id_to_uuid(subject_id, subject_type),
                         list(relations),
                         object_type,
                         _object_id_to_uuid(object_id),
@@ -372,7 +384,7 @@ class PostgresTupleStore:
                 """,
                 (
                     subject_type,
-                    _subject_id_to_uuid(subject_id),
+                    _subject_id_to_uuid(subject_id, subject_type),
                     relation,
                     object_type,
                     _object_id_to_uuid(object_id),
@@ -434,7 +446,7 @@ class PostgresTupleStore:
         limit: int = 50,
     ) -> Page[Tuple]:
         limit = min(limit, 200)
-        params: list[Any] = [subject_type, _subject_id_to_uuid(subject_id)]
+        params: list[Any] = [subject_type, _subject_id_to_uuid(subject_id, subject_type)]
         sql = (
             f"SELECT {_TUP_COLS} FROM tup "
             "WHERE subject_type = %s AND subject_id = %s"
