@@ -3,7 +3,7 @@
 All notable changes to `flametrench-authz` are recorded here.
 Spec-level changes live in [`spec/CHANGELOG.md`](https://github.com/flametrench/spec/blob/main/CHANGELOG.md).
 
-## [v0.3.0] — Unreleased (PyPI publish blocked)
+## [v0.3.0] — 2026-05-15 (tagged; PyPI publish pending org approval)
 
 ### Added (Postgres rewrite-rule evaluation, ADR 0017)
 - `PostgresTupleStore.__init__` accepts new optional `rules`, `max_depth`, `max_fan_out` kwargs mirroring `InMemoryTupleStore`. With `rules=None`, behavior is byte-identical to v0.2 (single SELECT with `relation = ANY(%s)` for the `check_any` fast path).
