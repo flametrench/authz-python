@@ -54,6 +54,12 @@ from .errors import (
     TupleNotFoundError,
 )
 from .patterns import RELATION_NAME_PATTERN, TYPE_PREFIX_PATTERN
+from .rewrite_rules import (
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_FAN_OUT,
+    Rules,
+    evaluate,
+)
 from .shares import (
     SHARE_MAX_TTL_SECONDS,
     CreateShareResult,
@@ -122,16 +128,26 @@ _TUP_COLS = (
 
 
 class PostgresTupleStore:
-    """Postgres-backed TupleStore. See module docstring."""
+    """Postgres-backed TupleStore. See module docstring.
+
+    v0.3 (ADR 0017): pass ``rules`` to enable rewrite-rule evaluation.
+    Without ``rules``, ``check()`` is exact-match only (v0.2 behavior).
+    """
 
     def __init__(
         self,
         connection: Any,
         *,
         clock: Callable[[], datetime] | None = None,
+        rules: "Rules | None" = None,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+        max_fan_out: int = DEFAULT_MAX_FAN_OUT,
     ) -> None:
         self._conn = connection
         self._clock = clock or _default_clock
+        self._rules = rules
+        self._max_depth = max_depth
+        self._max_fan_out = max_fan_out
 
     def _now(self) -> datetime:
         return self._clock()
@@ -239,6 +255,62 @@ class PostgresTupleStore:
 
     # ─── check / check_any ───
 
+    def _direct_lookup(
+        self,
+        subject_type: str,
+        subject_id_wire: str,
+        relation: str,
+        object_type: str,
+        object_id_wire: str,
+    ) -> str | None:
+        """One indexed SELECT; returns tup_id wire or None. Used by evaluate()."""
+        try:
+            s_uuid = _wire_to_uuid(subject_id_wire)
+            o_uuid = _object_id_to_uuid(object_id_wire)
+        except Exception:
+            return None
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM tup "
+                "WHERE subject_type = %s AND subject_id = %s AND relation = %s "
+                "  AND object_type = %s AND object_id = %s LIMIT 1",
+                (subject_type, s_uuid, relation, object_type, o_uuid),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return _encode("tup", str(row[0]))
+
+    def _list_by_object(
+        self,
+        object_type: str,
+        object_id_wire: str,
+        relation: str | None,
+    ) -> list[tuple[str, str, str]]:
+        """Enumerate (subject_type, subject_id, tup_id) for tuple_to_userset hops."""
+        try:
+            o_uuid = _object_id_to_uuid(object_id_wire)
+        except Exception:
+            return []
+        params: list[Any] = [object_type, o_uuid]
+        sql = (
+            "SELECT subject_type, subject_id, id FROM tup "
+            "WHERE object_type = %s AND object_id = %s"
+        )
+        if relation is not None:
+            sql += " AND relation = %s"
+            params.append(relation)
+        with self._conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        out = []
+        for row in rows:
+            subj_type = str(row[0])
+            subj_id_wire = _encode(subj_type, str(row[1]))
+            tup_id_wire = _encode("tup", str(row[2]))
+            out.append((subj_type, subj_id_wire, tup_id_wire))
+        return out
+
     def check(
         self,
         subject_type: str,
@@ -247,9 +319,25 @@ class PostgresTupleStore:
         object_type: str,
         object_id: str,
     ) -> CheckResult:
-        return self.check_any(
-            subject_type, subject_id, [relation], object_type, object_id,
+        if self._rules is None:
+            # v0.2 exact-match path: delegate to check_any for the single relation.
+            return self.check_any(
+                subject_type, subject_id, [relation], object_type, object_id,
+            )
+        # ADR 0017 rule-aware path: evaluate() issues Postgres lookups as callbacks.
+        result = evaluate(
+            rules=self._rules,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            relation=relation,
+            object_type=object_type,
+            object_id=object_id,
+            direct_lookup=self._direct_lookup,
+            list_by_object=self._list_by_object,
+            max_depth=self._max_depth,
+            max_fan_out=self._max_fan_out,
         )
+        return CheckResult(allowed=result.allowed, matched_tuple_id=result.matched_tuple_id)
 
     def check_any(
         self,
@@ -261,29 +349,37 @@ class PostgresTupleStore:
     ) -> CheckResult:
         if not relations:
             raise EmptyRelationSetError()
-        with self._conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id FROM tup
-                WHERE subject_type = %s AND subject_id = %s
-                  AND relation = ANY(%s) AND object_type = %s AND object_id = %s
-                LIMIT 1
-                """,
-                (
-                    subject_type,
-                    _wire_to_uuid(subject_id),
-                    list(relations),
-                    object_type,
-                    _object_id_to_uuid(object_id),
-                ),
+        if self._rules is None:
+            # Fast path: single SQL query with relation = ANY (v0.2 behavior).
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id FROM tup
+                    WHERE subject_type = %s AND subject_id = %s
+                      AND relation = ANY(%s) AND object_type = %s AND object_id = %s
+                    LIMIT 1
+                    """,
+                    (
+                        subject_type,
+                        _wire_to_uuid(subject_id),
+                        list(relations),
+                        object_type,
+                        _object_id_to_uuid(object_id),
+                    ),
+                )
+                row = cur.fetchone()
+            if row is None:
+                return CheckResult(allowed=False, matched_tuple_id=None)
+            return CheckResult(
+                allowed=True,
+                matched_tuple_id=_encode("tup", str(row[0])),
             )
-            row = cur.fetchone()
-        if row is None:
-            return CheckResult(allowed=False, matched_tuple_id=None)
-        return CheckResult(
-            allowed=True,
-            matched_tuple_id=_encode("tup", str(row[0])),
-        )
+        # Rule-aware path (ADR 0017): iterate relations, check() each in turn.
+        for rel in relations:
+            result = self.check(subject_type, subject_id, rel, object_type, object_id)
+            if result.allowed:
+                return result
+        return CheckResult(allowed=False, matched_tuple_id=None)
 
     # ─── Read accessors ───
 
