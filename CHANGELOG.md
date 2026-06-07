@@ -3,6 +3,14 @@
 All notable changes to `flametrench-authz` are recorded here.
 Spec-level changes live in [`spec/CHANGELOG.md`](https://github.com/flametrench/spec/blob/main/CHANGELOG.md).
 
+## [v0.3.0] — 2026-06-07
+
+### Added
+- `PostgresTupleStore` now accepts an optional `rules` parameter (plus `max_depth=8` and `max_fan_out=1024` defaults) for rewrite-rule evaluation ([ADR 0017](https://github.com/flametrench/spec/blob/main/decisions/0017-rewrite-rule-evaluation.md)). With `rules=None` (default), `check()` and `check_any()` are byte-identical to v0.2. With rules set, `check()` dispatches to the iterative `evaluate()` engine using synchronous `_direct_lookup()` and `_list_by_object()` Postgres callbacks.
+
+### Changed
+- Bumped `flametrench-ids` dependency floor to `>=0.3.0`.
+
 ## [v0.2.0rc4] — 2026-04-27
 
 ### Fixed
